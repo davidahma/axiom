@@ -17,6 +17,31 @@ python3 examples/sqlite/observe.py --case residual --output artifacts/sqlite-run
 
 By default the producer generates a unique run ID and uses the script's SHA-256 digest as its revision. In CI, pass the job's run identifier and tested build to the producer with `--run-id` and `--revision`. Give those same values to the gate with `--expect-run` and `--expect-revision` so a leftover observation file from a different run or build cannot satisfy the check.
 
+## Bind the reads to a particular request
+
+Issue the request before the job starts. These commands use a new directory so each file belongs to this attempt.
+
+```sh
+run_dir=$(mktemp -d)
+python3 -m axiom_demo request --policy examples/sqlite/policy.json \
+  --context staging --revision build-42 --run-id ci-17 --output "$run_dir/request.json"
+python3 examples/sqlite/observe.py --case clean --revision build-42 \
+  --request "$run_dir/request.json" --output "$run_dir/job.json"
+```
+
+Keep the SHA-256 value printed by `request` in the offboarding ticket. Paste that value at the `read` prompt when creating the receipt. For this synthetic job both storage reads pass.
+
+```sh
+read -r TICKET_REQUEST_SHA256
+python3 -m axiom_demo receipt --request "$run_dir/request.json" \
+  --expect-request "$TICKET_REQUEST_SHA256" --policy examples/sqlite/policy.json \
+  --evidence "$run_dir/job.json" --output "$run_dir/receipt.json"
+```
+
+The producer accepts a `staging` request for `sqlite-support`. It takes the run ID from the issued request and checks the requested revision against the build identifier you supply. Each request gets its own pair of synthetic tenants in SQLite. The native deletion job resolves its subject against that registration and commits its completion row in the same transaction as the deletions. After the storage checks, a read-only connection retrieves the job ID, request digest, start time and completion state from the committed row. Its readback time marks the end of the observation window. The local tenant keys stay in SQLite.
+
+Try `--case residual` with a fresh request to see the cached answer survive. Passing the first request's evidence to the second request fails the digest check even if both runs used the same build. A failed transaction leaves the rows in place and produces no new job packet.
+
 ## Adapt it to your application
 
 Start with two synthetic tenants whose records you can identify on every surface you intend to check. In [the observation script](observe.py), replace the two reads with your database or application calls and invoke your offboarding job at the same point. Record `completed` after your application confirms completion. Record a failed read as `unavailable`, and keep the surviving tenant's read on the same route as the departing tenant's. Set `revision` to the build you exercised.

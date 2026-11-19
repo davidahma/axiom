@@ -8,14 +8,146 @@ import sqlite3
 import tempfile
 import uuid
 from contextlib import closing
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 
-def seed(db):
+def utc_now():
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class Request:
+    id: str
+    digest: str
+    created_at: str
+    run_id: str
+
+
+def load_request(path, revision):
+    def unique(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("Request contains a duplicate field.")
+        return result
+
+    with path.open("rb") as stream:
+        raw = stream.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError("Request exceeds the size limit.")
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+        if (
+            set(data)
+            != {
+                "version",
+                "request_id",
+                "created_at",
+                "context",
+                "target",
+                "revision",
+                "run_id",
+                "policy_sha256",
+                "items",
+            }
+            or type(data["version"]) is not int
+            or data["version"] != 1
+        ):
+            raise ValueError
+        if data["context"] != "staging" or data["target"] != "sqlite-support":
+            raise ValueError
+        if data["revision"] != revision or not re.fullmatch(
+            "[0-9a-f]{32}", data["request_id"]
+        ):
+            raise ValueError
+        if not re.fullmatch("[0-9a-f]{64}", data["policy_sha256"]):
+            raise ValueError
+        identifier(data["run_id"])
+        created = datetime.strptime(data["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+        if (
+            created.strftime("%Y-%m-%dT%H:%M:%SZ") != data["created_at"]
+            or data["created_at"] > utc_now()
+        ):
+            raise ValueError
+        if not isinstance(data["items"], list) or len(data["items"]) > 256:
+            raise ValueError
+        seen = set()
+        for item in data["items"]:
+            if set(item) != {"id", "kind"} or item["kind"] not in (
+                "provider_statement",
+                "retention_schedule",
+            ):
+                raise ValueError
+            item_id = identifier(item["id"])
+            if item_id in seen:
+                raise ValueError
+            seen.add(item_id)
+    except (
+        argparse.ArgumentTypeError,
+        KeyError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ):
+        raise ValueError(
+            "Expected a valid staging request for sqlite-support and the tested revision."
+        ) from None
+    return Request(
+        data["request_id"],
+        hashlib.sha256(raw).hexdigest(),
+        data["created_at"],
+        data["run_id"],
+    )
+
+
+def register_request(db, request):
+    # The application assigns tenant keys when it accepts the staging request.
+    # Raw tenant keys stay inside this database.
     with db:
-        db.execute("CREATE TABLE tickets (tenant TEXT PRIMARY KEY, ticket TEXT)")
-        db.execute("CREATE TABLE cached_answers (tenant TEXT PRIMARY KEY, answer TEXT)")
-        for tenant in ("acme", "birch"):
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS requests (
+                id TEXT PRIMARY KEY, digest TEXT UNIQUE NOT NULL, subject TEXT UNIQUE NOT NULL,
+                retained TEXT UNIQUE NOT NULL, CHECK(subject != retained), UNIQUE(id, digest, subject)
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, digest TEXT NOT NULL,
+                subject TEXT NOT NULL, started_at TEXT NOT NULL, state TEXT NOT NULL,
+                FOREIGN KEY (request_id, digest, subject) REFERENCES requests(id, digest, subject)
+            )
+        """)
+        db.execute(
+            "INSERT INTO requests VALUES (?, ?, ?, ?)",
+            (
+                request.id,
+                request.digest,
+                uuid.uuid4().hex,
+                uuid.uuid4().hex,
+            ),
+        )
+
+
+def tenants_for(db, request):
+    row = db.execute(
+        "SELECT subject, retained FROM requests WHERE id = ? AND digest = ?",
+        (request.id, request.digest),
+    ).fetchone()
+    if row is None:
+        raise ValueError("The application has no matching request.")
+    return row
+
+
+def seed(db, tenants):
+    with db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS tickets (tenant TEXT PRIMARY KEY, ticket TEXT)"
+        )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS cached_answers (tenant TEXT PRIMARY KEY, answer TEXT)"
+        )
+        for tenant in tenants:
             db.execute(
                 "INSERT INTO tickets VALUES (?, ?)", (tenant, f"{tenant} ticket")
             )
@@ -24,18 +156,50 @@ def seed(db):
             )
 
 
-def offboard(db, case):
-    try:
-        with db:
-            db.execute("DELETE FROM tickets WHERE tenant = ?", ("acme",))
-            if case != "residual":
-                db.execute("DELETE FROM cached_answers WHERE tenant = ?", ("acme",))
-    except sqlite3.Error:
-        return "unconfirmed"
-    return "completed"
+def offboard(db, case, subject, request=None):
+    started_at = utc_now()
+    job_id = uuid.uuid4().hex
+    with db:
+        if request and (
+            subject != tenants_for(db, request)[0] or started_at < request.created_at
+        ):
+            raise ValueError("The deletion job does not match the registered request.")
+        db.execute("DELETE FROM tickets WHERE tenant = ?", (subject,))
+        if case != "residual":
+            db.execute("DELETE FROM cached_answers WHERE tenant = ?", (subject,))
+        if request:
+            db.execute(
+                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, 'completed')",
+                (job_id, request.id, request.digest, subject, started_at),
+            )
+    return job_id
 
 
-def read_pair(reader, query):
+def read_job(reader, request, job_id):
+    row = reader.execute(
+        """
+        SELECT j.id, j.digest, j.started_at, j.state
+        FROM jobs j JOIN requests r
+          ON r.id = j.request_id AND r.digest = j.digest AND r.subject = j.subject
+        WHERE j.id = ? AND r.id = ? AND r.digest = ?
+    """,
+        (job_id, request.id, request.digest),
+    ).fetchone()
+    if row is None or row[3] != "completed":
+        raise ValueError("No committed deletion job for this request.")
+    observed_at = utc_now()
+    if not request.created_at <= row[2] <= observed_at:
+        raise ValueError("Clock changed during the request.")
+    job = {
+        "id": row[0],
+        "request_sha256": row[1],
+        "started_at": row[2],
+        "observed_at": observed_at,
+    }
+    return job, row[3]
+
+
+def read_pair(reader, query, tenants):
     def read(tenant):
         try:
             row = reader.execute(query, (tenant,)).fetchone()
@@ -43,13 +207,19 @@ def read_pair(reader, query):
             return "unavailable"
         return "absent" if row is None else "present"
 
-    return {"subject": read("acme"), "control": read("birch")}
+    subject, retained = tenants
+    return {"subject": read(subject), "control": read(retained)}
 
 
-def observe(path, case, run_id, revision):
+def observe(path, case, run_id, revision, request=None):
     uri = path.as_uri() + "?mode=ro"
     with closing(sqlite3.connect(path)) as writer:
-        seed(writer)
+        tenants = ("acme", "birch")
+        if request:
+            writer.execute("PRAGMA foreign_keys = ON")
+            register_request(writer, request)
+            tenants = tenants_for(writer, request)
+        seed(writer, tenants)
         with (
             closing(sqlite3.connect(uri, uri=True)) as source_reader,
             closing(sqlite3.connect(uri, uri=True)) as cache_reader,
@@ -73,17 +243,25 @@ def observe(path, case, run_id, revision):
                     "id": probe_id,
                     "scope": scope,
                     "checkpoint": "after_offboarding",
-                    "before": read_pair(reader, query),
+                    "before": read_pair(reader, query, tenants),
                 }
                 for probe_id, scope, reader, query in probes
             ]
-            status = offboard(writer, case)
+            try:
+                job_id = offboard(writer, case, tenants[0], request)
+                status = "completed"
+            except sqlite3.Error:
+                if request:
+                    raise
+                status = "unconfirmed"
             if case == "unavailable":
                 cache_reader.close()
             for item, (_, _, reader, query) in zip(observations, probes):
-                item["after"] = read_pair(reader, query)
+                item["after"] = read_pair(reader, query, tenants)
+            if request:
+                job, status = read_job(source_reader, request, job_id)
 
-    return {
+    packet = {
         "version": 1,
         "target": "sqlite-support",
         "revision": revision,
@@ -91,6 +269,7 @@ def observe(path, case, run_id, revision):
         "offboarding": status,
         "probes": observations,
     }
+    return {"version": 1, "job": job, "observations": packet} if request else packet
 
 
 def identifier(value):
@@ -109,6 +288,9 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--request", type=Path, help="staging request issued before this job"
+    )
+    parser.add_argument(
         "--run-id", type=identifier, help="CI run identifier (default: a UUID)"
     )
     parser.add_argument(
@@ -117,14 +299,42 @@ def main():
         help="tested build identifier (default: script SHA-256)",
     )
     args = parser.parse_args()
-    run_id = args.run_id or uuid.uuid4().hex
-    revision = args.revision or hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    with tempfile.TemporaryDirectory() as directory:
-        observations = observe(
-            Path(directory).resolve() / "support.db", args.case, run_id, revision
+    try:
+        request = None
+        if args.request:
+            if args.run_id or not args.revision:
+                parser.error(
+                    "With --request, supply the tested --revision and omit --run-id."
+                )
+            if args.output.exists() and args.output.samefile(args.request):
+                parser.error("--output must differ from --request.")
+            request = load_request(args.request, args.revision)
+        run_id = request.run_id if request else (args.run_id or uuid.uuid4().hex)
+        revision = (
+            args.revision or hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(observations, indent=2) + "\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            observations = observe(
+                Path(directory).resolve() / "support.db",
+                args.case,
+                run_id,
+                revision,
+                request,
+            )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=args.output.parent, delete=False, encoding="utf-8"
+        ) as stream:
+            temporary = Path(stream.name)
+            try:
+                json.dump(observations, stream, indent=2)
+                stream.write("\n")
+                stream.close()
+                temporary.replace(args.output)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        parser.exit(1, f"Could not produce observations ({type(exc).__name__}).\n")
 
 
 if __name__ == "__main__":
