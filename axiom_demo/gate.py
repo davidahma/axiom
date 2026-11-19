@@ -4,7 +4,6 @@ import re
 
 from .report import keys_match, require
 
-MAX_INPUT_BYTES = 1024 * 1024
 MAX_PROBES = 256
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 CHECKPOINTS = ("after_offboarding", "after_worker")

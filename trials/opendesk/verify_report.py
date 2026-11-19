@@ -1,6 +1,8 @@
 """Validate a trial report resubmitted for publication, including its outcome."""
 
 import json
+import os
+import stat
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +41,16 @@ HEALTHY = {
 }
 PHASES = ("before_offboarding", "after_offboarding")
 STAGES = ("startup", "seeding", "baseline", "offboarding", "observation", "cleanup")
+MAX_INPUT_BYTES = 65_536
+LATEST_VERSION = 2
+HEALTHY_V2 = {**HEALTHY, "agent_read_reason": "none"}
+UNTESTED = {
+    "source_message_row": "NOT_TESTED",
+    "stored_ticket_summary": "NOT_TESTED",
+    "agent_summary": "NOT_TESTED",
+    "agent_http_status": None,
+    "agent_read_reason": "not_tested",
+}
 
 
 def require(condition):
@@ -46,10 +58,11 @@ def require(condition):
         raise ValueError("Invalid or inconsistent upstream evidence")
 
 
-def outcome(observations):
+def outcome(observations, version=1):
+    healthy = HEALTHY if version == 1 else HEALTHY_V2
     if not observations:
         return "INCONCLUSIVE"
-    if any(row != HEALTHY for row in observations[0]["workspaces"].values()):
+    if any(row != healthy for row in observations[0]["workspaces"].values()):
         return "INCONCLUSIVE"
     if len(observations) != 2:
         return "INCONCLUSIVE"
@@ -60,9 +73,41 @@ def outcome(observations):
         or acme["agent_summary"] == "RETURNED"
     ):
         return "FAIL"
-    if after["Birch"] != HEALTHY:
+    if after["Birch"] != healthy:
+        return "INCONCLUSIVE"
+    if version == 2 and (
+        acme["source_message_row"] != "ABSENT_BY_ID"
+        or acme["stored_ticket_summary"] != "ABSENT_BY_ID"
+        or acme["agent_read_reason"] not in ("none", "workspace_required")
+    ):
         return "INCONCLUSIVE"
     return "COMPLETED"
+
+
+def validate_v2_row(row):
+    require(set(row) == set(UNTESTED))
+    for surface in ("source_message_row", "stored_ticket_summary"):
+        require(row[surface] in ("FOUND", "ABSENT_BY_ID", "INCONCLUSIVE", "NOT_TESTED"))
+    status, result, reason = (
+        row["agent_http_status"],
+        row["agent_summary"],
+        row["agent_read_reason"],
+    )
+    require(status is None or (type(status) is int and 100 <= status <= 599))
+    if reason == "none":
+        require(status == 200 and result in ("RETURNED", "NOT_RETURNED"))
+    elif reason == "not_tested":
+        require(status is None and result == "NOT_TESTED")
+    else:
+        require(result == "INCONCLUSIVE")
+        if reason == "read_error":
+            require(status is None)
+        elif reason == "unexpected_ticket" or reason == "unexpected_summary":
+            require(status == 200)
+        elif reason == "workspace_required":
+            require(status == 400)
+        else:
+            require(reason == "http_error" and status is not None and status != 200)
 
 
 def validate(report):
@@ -76,9 +121,11 @@ def validate(report):
             "observations",
         }
     )
-    for key, value in METADATA.items():
+    version = report["report_version"]
+    require(type(version) is int and version in (1, LATEST_VERSION))
+    healthy = HEALTHY if version == 1 else HEALTHY_V2
+    for key, value in (METADATA | {"report_version": version}).items():
         require(report[key] == value)
-    require(type(report["report_version"]) is int)
     observations = report["observations"]
     require(isinstance(observations, list) and len(observations) <= 2)
     for index, item in enumerate(observations):
@@ -91,8 +138,14 @@ def validate(report):
             date.tzinfo == UTC
             and date.isoformat(timespec="seconds") == item["observed_at"]
         )
-        require(set(item["workspaces"]) == {"Acme", "Birch"})
+        require(
+            isinstance(item["workspaces"], dict)
+            and set(item["workspaces"]) == {"Acme", "Birch"}
+        )
         for row in item["workspaces"].values():
+            if version == 2:
+                validate_v2_row(row)
+                continue
             require(set(row) == set(HEALTHY))
             for surface in ("source_message_row", "stored_ticket_summary"):
                 require(row[surface] in ("FOUND", "ABSENT_BY_ID"))
@@ -109,12 +162,15 @@ def validate(report):
     status = report["offboarding_http_status"]
     require(status is None or (type(status) is int and status == 204))
     if len(observations) == 2:
-        require(status == 204 and interrupted in (None, "cleanup"))
+        allowed = (
+            (None, "cleanup") if version == 1 else (None, "observation", "cleanup")
+        )
+        require(status == 204 and interrupted in allowed)
         require(observations[0]["observed_at"] <= observations[1]["observed_at"])
     if status == 204:
         require(
             observations
-            and all(row == HEALTHY for row in observations[0]["workspaces"].values())
+            and all(row == healthy for row in observations[0]["workspaces"].values())
         )
         if len(observations) == 1:
             require(interrupted in ("observation", "cleanup"))
@@ -122,11 +178,11 @@ def validate(report):
         require(interrupted in ("baseline", "offboarding", "cleanup"))
         if interrupted == "offboarding":
             require(
-                all(row == HEALTHY for row in observations[0]["workspaces"].values())
+                all(row == healthy for row in observations[0]["workspaces"].values())
             )
     else:
         require(interrupted in ("startup", "seeding", "baseline", "cleanup"))
-    result = outcome(observations)
+    result = outcome(observations, version)
     if interrupted is not None and result != "FAIL":
         result = "INCONCLUSIVE"
     require(result == report["outcome"])
@@ -140,11 +196,30 @@ def unique_keys(pairs):
     return output
 
 
+def read_raw(path):
+    def regular_file(name, flags):
+        fd = os.open(name, flags | getattr(os, "O_NONBLOCK", 0))
+        try:
+            require(stat.S_ISREG(os.fstat(fd).st_mode))
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    with open(path, "rb", opener=regular_file) as source:
+        raw = source.read(MAX_INPUT_BYTES + 1)
+    require(len(raw) <= MAX_INPUT_BYTES)
+    return raw
+
+
 if __name__ == "__main__":
     try:
         validate(
-            json.loads(Path(sys.argv[1]).read_text(), object_pairs_hook=unique_keys)
+            json.loads(
+                read_raw(Path(sys.argv[1])).decode("utf-8"),
+                object_pairs_hook=unique_keys,
+            )
         )
-    except (IndexError, KeyError, TypeError, ValueError, OSError):
+    except (IndexError, KeyError, TypeError, ValueError, OSError, RecursionError):
         sys.exit("Invalid upstream report")
     print("Upstream report matches its pinned, content-free contract.")

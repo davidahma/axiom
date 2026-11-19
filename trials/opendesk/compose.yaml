@@ -1,6 +1,12 @@
 services:
   database:
     image: pgvector/pgvector:pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+    user: "postgres"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    mem_limit: 1g
+    pids_limit: 256
     environment:
       POSTGRES_USER: opendesk
       POSTGRES_DB: opendesk
@@ -11,10 +17,16 @@ services:
       timeout: 2s
       retries: 45
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql/data:uid=999,gid=999,mode=0700
+      - /var/run/postgresql:uid=999,gid=999,mode=0755
+      - /tmp:mode=1777
 
   model:
-    image: python:3.12.14-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+    image: python:3.12.16-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 64
     command: ["python", "-B", "/stub/provider.py"]
     user: "65534:65534"
     read_only: true
@@ -24,6 +36,11 @@ services:
 
   app:
     image: ghcr.io/useopendesk/opendesk:v0.4.13@sha256:e0fca3427eec675426c6c96766267d7980c861b52f630afc906fcf0c7dca0fe1
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    mem_limit: 1g
+    pids_limit: 256
     environment:
       OPENDESK_ROLE: all
       OPENDESK_ENV: development

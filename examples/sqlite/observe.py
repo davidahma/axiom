@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
 import tempfile
 import uuid
 from contextlib import closing
@@ -32,7 +34,12 @@ def load_request(path, revision):
             raise ValueError("Request contains a duplicate field.")
         return result
 
-    with path.open("rb") as stream:
+    def nonblocking_opener(name, flags):
+        return os.open(name, flags | getattr(os, "O_NONBLOCK", 0))
+
+    with open(path, "rb", opener=nonblocking_opener) as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("Request must be a regular file.")
         raw = stream.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:
         raise ValueError("Request exceeds the size limit.")

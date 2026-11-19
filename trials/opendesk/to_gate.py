@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from verify_report import unique_keys, validate
+from verify_report import MAX_INPUT_BYTES, read_raw, unique_keys, validate
 
 # Each scope identifies the reader and lookup implemented by this specific runner.
 # Keep it independent of the release policy that will judge these observations.
@@ -38,8 +38,13 @@ STATES = {
     "RETURNED": "present",
     "NOT_RETURNED": "absent",
     "INCONCLUSIVE": "unavailable",
+    "NOT_TESTED": "not_tested",
 }
-MAX_INPUT_BYTES = 65_536
+V2_SCOPES = {
+    "summary": "sql-observer.ticket-summary-marker.v2",
+    "worker-summary": "sql-observer.ticket-summary-marker.v2",
+    "agent-read": "support-agent.ticket-summary-marker.v2",
+}
 
 
 def read_pair(phases, phase, field):
@@ -60,6 +65,8 @@ def observations(raw):
     phases = {row["phase"]: row["workspaces"] for row in trial["observations"]}
     probes = []
     for name, scope, field, checkpoint in PROBES:
+        if trial["report_version"] == 2:
+            scope = V2_SCOPES.get(name, scope)
         probe = {
             "id": name,
             "scope": scope,
@@ -94,8 +101,7 @@ def main(argv=None):
     try:
         if args.output.exists() and args.report.samefile(args.output):
             raise ValueError("Output must differ from input")
-        with args.report.open("rb") as source:
-            converted = observations(source.read(MAX_INPUT_BYTES + 1))
+        converted = observations(read_raw(args.report))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             "w", dir=args.output.parent, delete=False, encoding="utf-8"
