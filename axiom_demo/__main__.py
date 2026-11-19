@@ -10,6 +10,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from . import gate, receipt_cli
+from .inputs import read_json
 from .report import (
     CASES,
     PHASES,
@@ -34,15 +35,6 @@ def save(report, path):
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-
-
-def unique_fields(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise InvalidReport("Duplicate JSON field.")
-        result[key] = value
-    return result
 
 
 def demo(path):
@@ -98,27 +90,10 @@ def demo(path):
     return 0
 
 
-def read_gate_input(path, label, *, opener=None):
-    try:
-        with open(path, "rb", opener=opener) as stream:
-            raw = stream.read(gate.MAX_INPUT_BYTES + 1)
-    except OSError:
-        raise InvalidReport(f"Could not read {label} input.") from None
-    if len(raw) > gate.MAX_INPUT_BYTES:
-        raise InvalidReport(f"The {label} input exceeds the 1 MiB limit.")
-    try:
-        data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields)
-    except (ValueError, RecursionError):
-        raise InvalidReport(
-            f"Invalid {label} JSON. Use UTF-8 and unique fields."
-        ) from None
-    return data, hashlib.sha256(raw).hexdigest()
-
-
 def run_gate(args):
     try:
-        policy, policy_digest = read_gate_input(args.policy, "policy")
-        observations, data_digest = read_gate_input(args.observations, "observations")
+        policy, policy_digest = read_json(args.policy, "policy")
+        observations, data_digest = read_json(args.observations, "observations")
         report = gate.evaluate(
             policy,
             observations,
@@ -184,14 +159,14 @@ def main(argv=None):
     check.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     if args.command in receipt_cli.COMMANDS:
-        return receipt_cli.run(args, read_gate_input)
+        return receipt_cli.run(args)
     if args.command == "gate":
         return run_gate(args)
     if args.command == "demo":
         return demo(args.output)
     try:
-        with args.report.open(encoding="utf-8") as stream:
-            validate(json.load(stream, object_pairs_hook=unique_fields))
+        report, _ = read_json(args.report, "report")
+        validate(report)
     except (ValueError, OSError, RecursionError) as error:
         print(f"Invalid report ({type(error).__name__}).", file=sys.stderr)
         return 1

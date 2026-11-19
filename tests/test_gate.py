@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -283,6 +285,60 @@ class GateTests(unittest.TestCase):
                 self.assertFalse(stdout)
                 self.assertNotIn("private", stderr)
                 self.assertFalse(self.report.exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX named pipes")
+    def test_file_inputs_reject_a_named_pipe_without_waiting_for_a_writer(self):
+        self.write_inputs(*documents())
+        fifo = self.root / "pending-input"
+        os.mkfifo(fifo)
+        alias = self.root / "pending-link"
+        alias.symlink_to(fifo)
+        for command, status in (
+            (["gate", "--policy", self.policy, "--observations", alias], 3),
+            (["gate", "--policy", fifo, "--observations", self.observations], 3),
+            (["validate", fifo], 1),
+            (
+                [
+                    "request",
+                    "--policy",
+                    fifo,
+                    "--revision",
+                    "v1",
+                    "--run-id",
+                    "r1",
+                    "--context",
+                    "staging",
+                    "--output",
+                    self.report,
+                ],
+                3,
+            ),
+        ):
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    [sys.executable, "-m", "axiom_demo", *command],
+                    cwd=Path(__file__).resolve().parents[1],
+                    check=False,
+                    capture_output=True,
+                    timeout=5,
+                )
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertFalse(result.stdout)
+                self.assertFalse(self.report.exists())
+
+    def test_symlink_to_regular_evidence_keeps_its_digest_and_verdict(self):
+        self.write_inputs(*documents())
+        alias = self.root / "evidence-link"
+        alias.symlink_to(self.observations)
+        self.observations = alias
+        code, stdout, stderr = self.invoke("--output", self.report)
+        self.assertEqual(code, 0, stderr or stdout)
+        report = json.loads(self.report.read_bytes())
+        self.assertEqual(report["verdict"], "PASS")
+        self.assertEqual(
+            report["observations_sha256"],
+            hashlib.sha256(alias.read_bytes()).hexdigest(),
+        )
 
     def test_output_cannot_replace_an_input_through_a_file_alias(self):
         self.write_inputs(*documents())

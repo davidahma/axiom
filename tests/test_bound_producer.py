@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -55,6 +56,7 @@ class BoundProducerTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
+            timeout=10,
         )
 
     def test_bound_clean_residual_and_unavailable_reads(self):
@@ -99,6 +101,29 @@ class BoundProducerTests(unittest.TestCase):
                 self.manifest.write_text(json.dumps({**self.data, **change}))
                 result = self.produce("clean", *args)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
+    def test_nonregular_manifest_is_rejected_without_waiting_for_a_writer(self):
+        self.manifest.unlink()
+        os.mkfifo(self.manifest)
+        result = self.produce("clean", "--revision", "build-42")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(str(self.manifest), result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_malformed_and_oversize_manifests_do_not_expose_the_contents(self):
+        valid = self.manifest.read_bytes()
+        for payload in (
+            b'{"target": "private test data",' + valid[1:],
+            valid + b" " * (1024 * 1024),
+            b"private test data\xff",
+        ):
+            with self.subTest(length=len(payload)):
+                self.manifest.write_bytes(payload)
+                result = self.produce("clean", "--revision", "build-42")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("private test data", result.stderr + result.stdout)
                 self.assertFalse(self.output.exists())
 
     def test_mismatched_tenant_or_receipt_cannot_satisfy_neighboring_request(self):

@@ -52,11 +52,11 @@ Seed synthetic markers for a departing tenant (the subject) and a retained tenan
 
 For an `after_worker` observation, also include a `worker` object on that probe. Record `captured_before_offboarding` and `finished_after_offboarding` as booleans. Each flag is true only when the producer observed that event for the **same job**. Take the final reads after that job finishes. A sleep alone cannot establish the ordering. Either missing observation, represented by a false flag, leaves the worker check inconclusive unless there is also an observed residual.
 
-Write `offboarding` as `completed` or `unconfirmed`. Use opaque, non-sensitive identifiers. Target, revision, run ID, probe IDs and scope IDs start with an ASCII letter or digit, followed by up to 127 ASCII letters, digits, dots, underscores or hyphens. These identifiers appear in the decision. Keep customer names, excerpts, raw requests, credentials and other payloads out of the files. The gate accepts UTF-8 JSON, at most 1 MiB per file and up to 256 unique probe IDs. It rejects unsupported versions, duplicate keys, unknown fields and malformed observations.
+Write `offboarding` as `completed` or `unconfirmed`. Use opaque, non-sensitive identifiers. Target, revision, run ID, probe IDs and scope IDs start with an ASCII letter or digit, followed by up to 127 ASCII letters, digits, dots, underscores or hyphens. These identifiers appear in the decision. Keep customer names, excerpts, raw requests, credentials and other payloads out of the files. The gate accepts UTF-8 JSON in regular files, at most 1 MiB per file and up to 256 unique probe IDs. It rejects unsupported versions, duplicate keys, unknown fields and malformed observations.
 
 ## Run the CI decision
 
-Use Python 3.11+ with the release archive. From a source checkout you can substitute `python3 -m axiom_demo` for `python3 axiom.pyz`. Build the same archive locally with `make bundle`. To check a downloaded archive against the release checksum, place both files together and run `sha256sum -c axiom.pyz.sha256` on Linux or `shasum -a 256 -c axiom.pyz.sha256` on macOS.
+Use Python 3.11+ with the release archive. From a source checkout you can substitute `python3 -m axiom_demo` for `python3 axiom.pyz`. Build the same archive locally with `make bundle`. For v0.3.1 and later, first [verify the archive against its signed build provenance](../SECURITY.md#verify-a-release-download). To check a downloaded archive against the release checksum, place both files together and run `sha256sum -c axiom.pyz.sha256` on Linux or `shasum -a 256 -c axiom.pyz.sha256` on macOS.
 
 ```sh
 python3 axiom.pyz gate --policy ci/offboarding-policy.json \

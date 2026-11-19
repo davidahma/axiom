@@ -154,3 +154,19 @@ class ReportTests(unittest.TestCase):
             path.write_text('{"schema_version":1,"schema_version":1}')
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(["validate", str(path)]), 1)
+
+    def test_legacy_validate_enforces_utf8_and_one_mib_on_file_and_symlink(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            path = Path(directory) / "report.json"
+            link = Path(directory) / "report-link"
+            link.symlink_to(path)
+            raw = json.dumps(self.report()).encode("utf-8")
+            at_limit = raw.ljust(1024 * 1024, b" ")
+            for data, code in ((at_limit, 0), (at_limit + b" ", 1), (raw + b"\xff", 1)):
+                with self.subTest(length=len(data)):
+                    path.write_bytes(data)
+                    self.assertEqual(main(["validate", str(link)]), code)

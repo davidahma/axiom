@@ -19,3 +19,9 @@ For target-specific changes, identify the upstream revision, the interface exerc
 Use [Gitleaks](https://github.com/gitleaks/gitleaks) to run `gitleaks git --redact --ignore-gitleaks-allow --log-opts="--all HEAD" .` against local history after committing, and `gitleaks git --staged --redact .` before committing. GitHub Actions also validates and scans each generated report before storing it as a short-lived artifact.
 
 Dependabot tracks pinned GitHub Actions and the hash-locked Linux Ruff wheel. Use the [pinned Ruff version](.github/requirements.txt) for `ruff check axiom_demo examples scripts tests trials` when changing Python. To update the standalone Gitleaks binary, match the Linux x64 asset from the official release to its published SHA-256 checksum, update both values in [the installer](.github/scripts/install-gitleaks.sh), and exercise the Secret scan job.
+
+## Release checks
+
+The portable archive builder uses an explicit list of runtime files and fixes their line endings. When adding a runtime module, update the list and run the packaged CLI tests. The PR secret scan uses the base revision's checksum-pinned installer and a separate default ruleset. Changes to workflows still need maintainer review. The three required branch checks are bound to the GitHub Actions app.
+
+For publication, use the files from a successful push run for the exact `main` commit, including the opendesk policy uploaded with its decision. Verify every asset against that commit's attestation, then replay the downloaded release. [Verification commands](SECURITY.md#verify-a-release-download)

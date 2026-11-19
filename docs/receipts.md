@@ -4,7 +4,7 @@ A customer has asked a vendor to remove its support data. Before signing a respo
 
 ## Try a complete case
 
-From the repository root, run `make receipt-example` with Python 3.11+. The example issues a staging request, offboards a synthetic tenant, generates a receipt, replays it, and writes `artifacts/receipt-example.zip`. You can also download `axiom.pyz` and the example ZIP from the [release](https://github.com/davidahma/axiom/releases/tag/v0.3.0).
+From the repository root, run `make receipt-example` with Python 3.11+. The example issues a staging request, offboards a synthetic tenant, generates a receipt, replays it, and writes `artifacts/receipt-example.zip`. You can also download `axiom.pyz` and the example ZIP from the [release](https://github.com/davidahma/axiom/releases/tag/v0.3.1).
 
 | Evidence in the example | What the reviewer can say |
 | --- | --- |
@@ -14,7 +14,7 @@ From the repository root, run `make receipt-example` with Python 3.11+. The exam
 
 The technical verdict is **PASS**. The review status is **OPEN_ITEMS**. Replaying a valid receipt returns the same review status, including a nonzero exit when something remains open.
 
-Extract the example into a fresh directory beside the CLI. Set `EXPECTED_REQUEST_SHA256` to the digest printed in the release notes or in the reference job's GitHub Actions summary. The ZIP includes a copy for inspecting the fixture. For a real review, use the digest already saved in the original ticket.
+Check the downloaded CLI and ZIP against the release commit using the [build verification instructions](../SECURITY.md#verify-a-release-download). Extract the example into a fresh directory beside the CLI. Set `EXPECTED_REQUEST_SHA256` to the digest printed in the release notes or in the reference job's GitHub Actions summary. The ZIP includes a copy for inspecting the fixture. For a real review, use the digest already saved in the original ticket.
 
 ```sh
 unzip receipt-example.zip -d case
@@ -55,7 +55,9 @@ The final command exits 1 and identifies the surviving cache row. The example ac
 | Supplemental evidence | Case owner or provider | One declared ID per item, matching request and document digests, issuer label, and the stated outcome or expiry. Original document contents stay outside the receipt. |
 | Review receipt | Axiom | Replay recomputes every result. Each input digest covers the file's exact bytes. Receipt comparison checks the complete JSON value and types. |
 
-An observation envelope has three top-level fields, `version` (1), `job` and `observations`. The job has `id`, `request_sha256`, `started_at` and `observed_at`. Use UTC timestamps at second precision, such as `2030-01-15T12:00:00Z`. The nested observations use the [existing gate format](gate.md). Bare staging reports cannot be turned into request evidence by the CLI. A producer with authority to fabricate job records or readings could still make false claims.
+An observation envelope has three top-level fields, `version` (1), `job` and `observations`. The job has `id`, `request_sha256`, `started_at` and `observed_at`. Use UTC timestamps at second precision, such as `2030-01-15T12:00:00Z`. On receipt creation and replay, the verifier checks the observation against its current UTC clock and allows up to five minutes of forward skew. The request, start and observation must also be in order. Check the participating clocks if a valid observation is rejected. The receipt omits the verifier clock reading so historical evidence still replays deterministically.
+
+JSON inputs must be regular files of at most 1 MiB. Original exhibit files must be nonempty regular files of at most 32 MiB. Symlinks to regular files work. The nested observations use the [existing gate format](gate.md). Bare staging reports cannot be turned into request evidence by the CLI. A producer with authority to fabricate job records or readings could still make false claims.
 
 ## Add a provider statement or backup schedule
 

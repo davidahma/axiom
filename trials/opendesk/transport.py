@@ -2,8 +2,8 @@
 
 import json
 import sys
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from contextlib import closing
+from http.client import HTTPConnection
 
 
 def main():
@@ -14,17 +14,15 @@ def main():
     if call["workspace"]:
         headers["OD-Workspace"] = call["workspace"]
     body = None if call["body"] is None else json.dumps(call["body"]).encode()
-    request = Request(
-        "http://app:8080/v1" + call["path"],
-        data=body,
-        method=call["method"],
-        headers=headers,
-    )
-    try:
-        response = urlopen(request, timeout=30)
-    except HTTPError as exc:
-        response = exc
-    with response:
+    # HTTPConnection makes one request to this service and never follows redirects.
+    with closing(HTTPConnection("app", 8080, timeout=30)) as connection:
+        connection.request(
+            call["method"], "/v1" + call["path"], body=body, headers=headers
+        )
+        response = connection.getresponse()
+        if 300 <= response.status < 400:
+            json.dump([response.status, {}], sys.stdout)
+            return
         raw = response.read()
         json.dump([response.status, json.loads(raw) if raw else {}], sys.stdout)
 

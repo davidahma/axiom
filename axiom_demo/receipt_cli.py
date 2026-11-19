@@ -3,16 +3,18 @@
 import hashlib
 import json
 import os
-import stat
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import gate, receipt
+from . import receipt
+from .inputs import MAX_JSON_BYTES, read_json, regular_file_opener
 from .report import InvalidReport
 
 COMMANDS = ("request", "receipt", "verify-receipt")
 MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
+MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def add_commands(jobs):
@@ -56,18 +58,6 @@ def add_commands(jobs):
         )
 
 
-def regular_file_opener(path, flags):
-    # O_NONBLOCK lets us reject a FIFO without waiting for a writer.
-    fd = os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise InvalidReport("Input must be a regular file.")
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
 def document_digest(path):
     digest = hashlib.sha256()
     with open(path, "rb", opener=regular_file_opener) as stream:
@@ -86,7 +76,7 @@ def document_digest(path):
 
 def publish_new(data, path):
     raw = (json.dumps(data, indent=2) + "\n").encode("utf-8")
-    if len(raw) > gate.MAX_INPUT_BYTES:
+    if len(raw) > MAX_JSON_BYTES:
         raise InvalidReport("Output exceeds the 1 MiB replay limit.")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -137,14 +127,9 @@ def print_decision(report, *, verified):
     print(f"Review status {report['review_status']}")
 
 
-def run(args, read_input):
-    """Read JSON through the same bounded, duplicate-rejecting reader as gate."""
-
-    def read(path, label):
-        return read_input(path, label, opener=regular_file_opener)
-
+def run(args):
     try:
-        policy, policy_hash = read(args.policy, "policy")
+        policy, policy_hash = read_json(args.policy, "policy")
         if args.command == "request":
             request = receipt.issue(
                 policy,
@@ -161,13 +146,13 @@ def run(args, read_input):
 
         if len(args.record) > receipt.MAX_ITEMS:
             raise InvalidReport("Too many record attachments (maximum 256).")
-        request, request_hash = read(args.request, "request")
+        request, request_hash = read_json(args.request, "request")
         if request_hash != args.expect_request:
             raise InvalidReport("Request digest does not match expected digest.")
-        evidence, evidence_hash = read(args.evidence, "evidence")
+        evidence, evidence_hash = read_json(args.evidence, "evidence")
         records = []
         for descriptor_path, document_path in args.record:
-            descriptor, descriptor_hash = read(descriptor_path, "descriptor")
+            descriptor, descriptor_hash = read_json(descriptor_path, "descriptor")
             records.append(
                 (descriptor, descriptor_hash, document_digest(document_path))
             )
@@ -182,11 +167,18 @@ def run(args, read_input):
             evidence_hash,
             records,
         )
+        if (
+            datetime.fromisoformat(report["observed_at"])
+            > datetime.now(UTC) + MAX_CLOCK_SKEW
+        ):
+            raise InvalidReport(
+                "Observation time is more than five minutes ahead of the verifier clock."
+            )
         if args.expect_job is not None and args.expect_job != report["job_id"]:
             raise InvalidReport("Job identifier does not match the expected job.")
         verified = args.command == "verify-receipt"
         if verified:
-            supplied, _ = read(args.receipt, "receipt")
+            supplied, _ = read_json(args.receipt, "receipt")
             # JSON distinguishes true, 1, and 1.0. Native Python equality does not.
             if json.dumps(supplied, sort_keys=True) != json.dumps(
                 report, sort_keys=True

@@ -15,3 +15,18 @@ Keep the original request digest in an access-controlled case system before disp
 GitHub push protection can stop supported secret patterns during a push. The separate **Secret scan** CI check runs Gitleaks on the fetched Git history, including the checked-out change. Before uploading a report, CI validates its evidence format and scans the file. A clean scan covers the enabled detectors and files they inspected.
 
 If a push is blocked, remove the secret from the affected local commits before retrying. [GitHub push protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-push-protection)
+
+## Verify a release download
+
+Starting with v0.3.1, the GitHub Actions workflow publishes signed build provenance for each release asset after the tests, upstream trial and secret scan succeed on `main`. The signing job downloads those files from that run. The attestation identifies the workflow and the exact Git commit. It covers the release software and examples. A customer receipt has its own review and optional signature.
+
+Obtain the expected full Git commit from your approved release record or independently reviewed merged PR. With an authenticated GitHub CLI, run the following command **before executing the downloaded CLI**. Substitute the ZIP or another release filename to verify that asset. The release notes also name the producing run and commit. [GitHub attestation verification](https://cli.github.com/manual/gh_attestation_verify)
+
+```sh
+gh attestation verify axiom.pyz --repo davidahma/axiom \
+  --signer-workflow davidahma/axiom/.github/workflows/checks.yml \
+  --source-ref refs/heads/main --source-digest "$EXPECTED_COMMIT" \
+  --deny-self-hosted-runners
+```
+
+Earlier releases carry ordinary checksums. For those versions, a separately trusted source revision and a matching local rebuild can corroborate the CLI bytes.

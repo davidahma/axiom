@@ -2,11 +2,14 @@
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "sqlite"
@@ -91,6 +94,60 @@ class PortableCLITests(unittest.TestCase):
         self.assertEqual(
             json.loads(report.read_bytes())["fixture_sha256"],
             hashlib.sha256(
-                (ROOT / "axiom_demo" / "fixture.py").read_bytes()
+                (ROOT / "axiom_demo" / "fixture.py")
+                .read_bytes()
+                .replace(b"\r\n", b"\n")
             ).hexdigest(),
         )
+
+    def copy_checkout(self, name):
+        checkout = self.work / name
+        (checkout / "scripts").mkdir(parents=True)
+        shutil.copyfile(
+            ROOT / "scripts/build_zipapp.py", checkout / "scripts/build_zipapp.py"
+        )
+        shutil.copyfile(ROOT / "LICENSE", checkout / "LICENSE")
+        shutil.copytree(
+            ROOT / "axiom_demo",
+            checkout / "axiom_demo",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        return checkout
+
+    def test_package_omits_local_files_and_is_identical_from_crlf_checkout(self):
+        checkout = self.copy_checkout("crlf-checkout")
+        for source in [checkout / "LICENSE", *(checkout / "axiom_demo").glob("*.py")]:
+            content = source.read_bytes().replace(b"\r\n", b"\n")
+            source.write_bytes(content.replace(b"\n", b"\r\n"))
+        (checkout / "axiom_demo/local_debug.py").write_text("local_only = True\n")
+        output = checkout / "portable.pyz"
+        self.invoke(
+            checkout / "scripts/build_zipapp.py", "--output", output, check=True
+        )
+        with ZipFile(output) as archive:
+            self.assertNotIn("axiom_demo/local_debug.py", archive.namelist())
+            self.assertIn("axiom_demo/inputs.py", archive.namelist())
+        self.assertEqual(output.read_bytes(), self.cli.read_bytes())
+
+    def test_output_cannot_replace_a_source_or_leave_a_partial_build(self):
+        checkout = self.copy_checkout("alias-checkout")
+        script = checkout / "scripts/build_zipapp.py"
+        source = checkout / "axiom_demo/gate.py"
+        original = source.read_bytes()
+        hard = checkout / "hardlink.pyz"
+        os.link(source, hard)
+        symbolic = checkout / "symlink.pyz"
+        symbolic.symlink_to(source)
+        for alias in (source, symbolic, hard, script):
+            with self.subTest(alias=alias.name):
+                self.assertNotEqual(
+                    self.invoke(script, "--output", alias).returncode, 0
+                )
+                self.assertEqual(source.read_bytes(), original)
+                self.assertTrue(hard.samefile(source))
+                self.assertTrue(symbolic.is_symlink())
+        build = checkout / "portable.pyz"
+        self.invoke(script, "--output", build, check=True)
+        source.unlink()
+        self.assertNotEqual(self.invoke(script, "--output", build).returncode, 0)
+        self.assertEqual(build.read_bytes(), self.cli.read_bytes())

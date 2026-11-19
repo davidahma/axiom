@@ -1,13 +1,19 @@
 """Exercise the complete receipt handoff from outside the source checkout."""
 
 import hashlib
+import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
+
+from axiom_demo.__main__ import main
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "sqlite"
@@ -153,6 +159,37 @@ class ReceiptCLITests(unittest.TestCase):
             code=3,
         )
         self.assertFalse((self.work / "second-receipt.json").exists())
+
+    def test_receipt_creation_and_replay_admit_at_most_five_minutes_of_clock_skew(self):
+        request, anchor = self.request("case")
+        evidence = self.observe(request, "clean", "observations")
+        observed_at = datetime.fromisoformat(
+            json.loads(evidence.read_bytes())["job"]["observed_at"]
+        )
+        inputs = list(map(str, self.inputs(request, anchor, evidence)))
+        original = self.work / "original.json"
+        self.invoke(self.cli, "receipt", *inputs, "--output", original)
+        original_bytes = original.read_bytes()
+        with (
+            patch("axiom_demo.receipt_cli.datetime", wraps=datetime) as clock,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            for seconds, code in ((300, 0), (301, 3), (86400, 3), (-86400, 0)):
+                with self.subTest(seconds=seconds):
+                    clock.now.return_value = observed_at - timedelta(seconds=seconds)
+                    output = self.work / f"receipt-{seconds}.json"
+                    self.assertEqual(
+                        main(["receipt", *inputs, "--output", str(output)]), code
+                    )
+                    self.assertEqual(
+                        main(["verify-receipt", *inputs, "--receipt", str(original)]),
+                        code,
+                    )
+                    if code == 0:
+                        self.assertEqual(output.read_bytes(), original_bytes)
+                    else:
+                        self.assertFalse(output.exists())
 
     def test_replay_requires_original_document_and_rejects_edit_to_stored_decision(
         self,

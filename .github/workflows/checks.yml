@@ -81,9 +81,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan Git history and the checked-out change
+        env:
+          SCANNER_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
-          bash .github/scripts/install-gitleaks.sh
-          "$RUNNER_TEMP/axiom-tools/gitleaks" git --no-banner --redact --ignore-gitleaks-allow --log-opts="--all HEAD" .
+          git show "$SCANNER_REVISION:.github/scripts/install-gitleaks.sh" > "$RUNNER_TEMP/install-gitleaks.sh"
+          bash "$RUNNER_TEMP/install-gitleaks.sh"
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
+          : > "$RUNNER_TEMP/.gitleaksignore"
+          "$RUNNER_TEMP/axiom-tools/gitleaks" git --no-banner --redact --ignore-gitleaks-allow \
+            --config "$RUNNER_TEMP/gitleaks.toml" --gitleaks-ignore-path "$RUNNER_TEMP/.gitleaksignore" \
+            --log-opts="--all HEAD" .
 
   upstream:
     name: Upstream trial
@@ -98,16 +105,6 @@ jobs:
           python-version: '3.11'
       - name: Exercise workspace offboarding on the pinned local application
         run: python3 trials/opendesk/run.py --report artifacts/opendesk.json
-      - name: Apply the offboarding policy to the live trial
-        run: |
-          python3 trials/opendesk/to_gate.py artifacts/opendesk.json --output artifacts/opendesk-observations.json
-          status=0
-          python3 -m axiom_demo gate --policy trials/opendesk/policy.json \
-            --observations artifacts/opendesk-observations.json --output artifacts/opendesk-decision.json || status=$?
-          test "$status" -eq 2
-          jq -e '.verdict == "INCONCLUSIVE" and
-            ([.probes[] | {key:.id, value:.verdict}] | from_entries) ==
-              {"source":"PASS","summary":"PASS","agent-read":"INCONCLUSIVE","worker-summary":"INCONCLUSIVE"}' artifacts/opendesk-decision.json
       - name: Validate and scan the upstream report before upload
         id: report
         if: ${{ !cancelled() && hashFiles('artifacts/opendesk.json') != '' }}
@@ -115,17 +112,26 @@ jobs:
           python3 trials/opendesk/verify_report.py artifacts/opendesk.json
           bash .github/scripts/install-gitleaks.sh
           "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < artifacts/opendesk.json
-      - name: Scan the portable evidence before upload
-        if: ${{ success() }}
+      - name: Export and scan the portable evidence
+        id: gate_report
+        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
         run: |
-          for report in artifacts/opendesk-observations.json artifacts/opendesk-decision.json; do
+          cp trials/opendesk/policy-v2.json artifacts/opendesk-policy.json
+          python3 trials/opendesk/to_gate.py artifacts/opendesk.json --output artifacts/opendesk-observations.json
+          status=0
+          python3 -m axiom_demo gate --policy artifacts/opendesk-policy.json \
+            --observations artifacts/opendesk-observations.json --output artifacts/opendesk-decision.json || status=$?
+          test "$status" -le 2
+          for report in artifacts/opendesk-{policy,observations,decision}.json; do
             "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < "$report"
           done
       - name: Save the checked gate decision and observations
+        if: ${{ !cancelled() && steps.gate_report.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: upstream-gate
           path: |
+            artifacts/opendesk-policy.json
             artifacts/opendesk-observations.json
             artifacts/opendesk-decision.json
           if-no-files-found: error
@@ -138,3 +144,39 @@ jobs:
           path: artifacts/opendesk.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: Assert the pinned application's observed outcomes
+        run: |
+          jq -e '.outcome == "COMPLETED" and .worker_overlap.result == "NOT_TESTED" and
+            .observations[1].workspaces.Acme.agent_http_status == 400 and
+            .observations[1].workspaces.Birch.agent_summary == "RETURNED"' artifacts/opendesk.json
+          jq -e '.verdict == "INCONCLUSIVE" and
+            ([.probes[] | {key:.id, value:.verdict}] | from_entries) ==
+              {"source":"PASS","summary":"PASS","agent-read":"INCONCLUSIVE","worker-summary":"INCONCLUSIVE"}' artifacts/opendesk-decision.json
+
+  provenance:
+    name: Attest release artifacts
+    needs: [reference, secrets, upstream]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download artifacts from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: checked
+          merge-multiple: true
+      - name: Digest each expected release asset
+        working-directory: checked
+        run: |
+          sha256sum axiom.pyz axiom.pyz.sha256 demo-report.json receipt-example.zip \
+            opendesk.json opendesk-policy.json opendesk-observations.json opendesk-decision.json > subjects.sha256
+      - name: Sign build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: checked/subjects.sha256
+          create-storage-record: false

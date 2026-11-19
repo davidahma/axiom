@@ -16,9 +16,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
-from verify_report import HEALTHY, METADATA, outcome, validate
+from verify_report import (
+    HEALTHY_V2,
+    LATEST_VERSION,
+    METADATA,
+    UNTESTED,
+    outcome,
+    validate,
+)
 
 HERE = Path(__file__).resolve().parent
+COMPOSE_TIMEOUTS = {"up": 15 * 60, "exec": 60, "down": 90}
 SUPPORT_EMAIL = "agent@example.test"
 CASES = {
     "Acme": ("copper compass", "Route returns to the copper-compass desk."),
@@ -59,6 +67,7 @@ class Stack:
             env=self.env,
             text=True,
             check=True,
+            timeout=COMPOSE_TIMEOUTS[args[0]],
             stdout=subprocess.PIPE if capture else sys.stderr,
         )
         return result.stdout.strip() if capture else None
@@ -112,7 +121,7 @@ class API:
             capture=True,
         )
         status, value = json.loads(result)
-        if status not in allowed:
+        if allowed is not None and status not in allowed:
             code = value.get("code", "unclassified")
             raise RuntimeError(f"{method} {path} returned HTTP {status} ({code})")
         return status, value
@@ -193,39 +202,109 @@ def seed(api, owner, agent, label):
     return workspace, ticket_id, str(UUID(source_ids[0]))
 
 
-def observe(stack, api, agent, label, ids):
+def summary_state(summary, marker):
+    """Classify only attributable strings in the native text/key_points fields."""
+    if summary is None or summary == {}:
+        return "ABSENT_BY_ID"
+    if not isinstance(summary, dict):
+        return "INCONCLUSIVE"
+    text = summary.get("text")
+    points = summary.get("key_points", [])
+    values = [text, *(points if isinstance(points, list) else [])]
+    if any(
+        isinstance(item, str) and marker in item.casefold().replace("-", " ")
+        for item in values
+    ):
+        return "FOUND"
+    if (
+        (text is None or text == "")
+        and points == []
+        and set(summary)
+        <= {
+            "text",
+            "key_points",
+            "sentiment",
+            "updated_at",
+            "message_count",
+        }
+    ):
+        return "ABSENT_BY_ID"
+    return "INCONCLUSIVE"
+
+
+def agent_read(status, value, ticket, marker):
+    if status != 200:
+        reason = "http_error"
+        if (
+            status == 400
+            and isinstance(value, dict)
+            and value.get("code") == "workspace_required"
+        ):
+            reason = "workspace_required"
+        return "INCONCLUSIVE", status, reason
+    if (
+        not isinstance(value, dict)
+        or value.get("id") != ticket
+        or not isinstance(value.get("custom"), dict)
+    ):
+        return "INCONCLUSIVE", status, "unexpected_ticket"
+    result = summary_state(value["custom"].get("ai_summary"), marker)
+    if result == "INCONCLUSIVE":
+        return result, status, "unexpected_summary"
+    return ("RETURNED" if result == "FOUND" else "NOT_RETURNED"), status, "none"
+
+
+READ_ERRORS = (
+    RuntimeError,
+    ValueError,
+    OSError,
+    TypeError,
+    KeyError,
+    subprocess.SubprocessError,
+)
+
+
+def observe(stack, api, agent, label, ids, row):
     workspace, ticket, message = ids
     # Each bound identifier was parsed as UUID above. Look up the records by
     # their own primary keys so workspace visibility cannot hide a leftover.
-    counts = stack.sql(
-        "axiom_observer",
-        f"""
-        SELECT
-          (SELECT count(*) FROM messages WHERE id = '{message}'::uuid),
-          (SELECT count(*) FROM tickets WHERE id = '{ticket}'::uuid AND custom ? 'ai_summary');
-    """,
+    marker = CASES[label][0]
+    try:
+        source = stack.sql(
+            "axiom_observer",
+            f"SELECT count(*) FROM messages WHERE id = '{message}'::uuid;",
+        )
+        row["source_message_row"] = {"0": "ABSENT_BY_ID", "1": "FOUND"}[source]
+    except READ_ERRORS:
+        row["source_message_row"] = "INCONCLUSIVE"
+    try:
+        raw = stack.sql(
+            "axiom_observer",
+            f"""SELECT COALESCE((SELECT CASE WHEN jsonb_typeof(custom) = 'object'
+                         THEN custom->'ai_summary' ELSE 'false'::jsonb END
+                         FROM tickets WHERE id = '{ticket}'::uuid), 'null'::jsonb);""",
+        )
+        row["stored_ticket_summary"] = summary_state(json.loads(raw), marker)
+    except READ_ERRORS:
+        row["stored_ticket_summary"] = "INCONCLUSIVE"
+    try:
+        status, value = api.request(
+            "GET", "/tickets/" + ticket, token=agent, workspace=workspace, allowed=None
+        )
+        result = agent_read(status, value, ticket, marker)
+    except READ_ERRORS:
+        result = "INCONCLUSIVE", None, "read_error"
+    row["agent_summary"], row["agent_http_status"], row["agent_read_reason"] = result
+
+
+def checkpoint(stack, api, agent, ids, report, phase):
+    rows = {label: UNTESTED.copy() for label in CASES}
+    report["observations"].append(
+        {"phase": phase, "observed_at": now(), "workspaces": rows}
     )
-    source, summary = map(int, counts.split("|"))
-    status, value = api.request(
-        "GET",
-        "/tickets/" + ticket,
-        token=agent,
-        workspace=workspace,
-        allowed=(200, 400, 401, 403, 404),
-    )
-    if status == 400 and value.get("code") != "workspace_required":
-        raise RuntimeError("Unexpected support-path validation error")
-    if status == 200:
-        shown = value.get("custom", {}).get("ai_summary", {}).get("text")
-        agent_result = "RETURNED" if shown == CASES[label][1] else "NOT_RETURNED"
-    else:
-        agent_result = "INCONCLUSIVE"
-    return {
-        "source_message_row": "FOUND" if source else "ABSENT_BY_ID",
-        "stored_ticket_summary": "FOUND" if summary else "ABSENT_BY_ID",
-        "agent_summary": agent_result,
-        "agent_http_status": status,
-    }
+    for label, item in ids.items():
+        observe(stack, api, agent, label, item, rows[label])
+    return rows
 
 
 def run(stack, report):
@@ -244,20 +323,9 @@ def run(stack, report):
     agent, _ = account(api, SUPPORT_EMAIL, "Demo Agent")
     ids = {label: seed(api, owner, agent, label) for label in CASES}
 
-    def checkpoint(phase):
-        return {
-            "phase": phase,
-            "observed_at": now(),
-            "workspaces": {
-                label: observe(stack, api, agent, label, item)
-                for label, item in ids.items()
-            },
-        }
-
     report["interrupted_at"] = "baseline"
-    baseline = checkpoint("before_offboarding")
-    report["observations"].append(baseline)
-    if any(row != HEALTHY for row in baseline["workspaces"].values()):
+    baseline = checkpoint(stack, api, agent, ids, report, "before_offboarding")
+    if any(row != HEALTHY_V2 for row in baseline.values()):
         return
     report["interrupted_at"] = "offboarding"
     status, _ = api.request(
@@ -270,7 +338,7 @@ def run(stack, report):
     )
     report["offboarding_http_status"] = status
     report["interrupted_at"] = "observation"
-    report["observations"].append(checkpoint("after_offboarding"))
+    checkpoint(stack, api, agent, ids, report, "after_offboarding")
     report["interrupted_at"] = None
 
 
@@ -281,6 +349,7 @@ def main():
     stack = Stack()
     evidence = {
         **METADATA,
+        "report_version": LATEST_VERSION,
         "outcome": "INCONCLUSIVE",
         "interrupted_at": "startup",
         "observations": [],
@@ -292,6 +361,9 @@ def main():
         RuntimeError,
         ValueError,
         OSError,
+        TypeError,
+        AttributeError,
+        IndexError,
         KeyError,
         subprocess.SubprocessError,
     ) as exc:
@@ -308,7 +380,7 @@ def main():
                 file=sys.stderr,
             )
             evidence["interrupted_at"] = "cleanup"
-    evidence["outcome"] = outcome(evidence["observations"])
+    evidence["outcome"] = outcome(evidence["observations"], evidence["report_version"])
     if evidence["interrupted_at"] and evidence["outcome"] != "FAIL":
         evidence["outcome"] = "INCONCLUSIVE"
     validate(evidence)
