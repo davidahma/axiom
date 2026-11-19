@@ -6,6 +6,10 @@ For a vulnerability in Axiom, submit a [private vulnerability report](https://gi
 
 Keep tenant data, raw reports from live systems, credentials and access tokens out of public issues, pull requests and CI logs. If a credential has been exposed, revoke or rotate it with its issuer immediately.
 
+## Docker trial dependencies
+
+The portable CLI uses the Python standard library. The optional OpenDesk trial pulls three container images and runs synthetic data on an internal Docker network. Its image review lists the remaining advisories, the affected architectures and the evidence for the Brotli finding. [Trial image review](trials/opendesk/README.md#trial-image-review)
+
 ## Receipt trust and privacy
 
 Keep the original request digest in an access-controlled case system before dispatch. Restrict changes to the policy, producer, application job records and signing keys. Replay depends on these sources. Use opaque identifiers and choose the audience and retention period for originals, descriptors and receipts separately. For signatures, obtain the allowed signing keys through a trusted channel. [Evidence boundaries](docs/receipts.md)

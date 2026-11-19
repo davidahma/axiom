@@ -4,7 +4,7 @@ A customer has asked a vendor to remove its support data. Before signing a respo
 
 ## Try a complete case
 
-From the repository root, run `make receipt-example` with Python 3.11+. The example issues a staging request, offboards a synthetic tenant, generates a receipt, replays it, and writes `artifacts/receipt-example.zip`. You can also download `axiom.pyz` and the example ZIP from the [release](https://github.com/davidahma/axiom/releases/tag/v0.3.1).
+From the repository root, run `make receipt-example` with Python 3.11+. The example issues a staging request, offboards a synthetic tenant, generates a receipt, replays it, and writes `artifacts/receipt-example.zip`. You can also download `axiom.pyz` and the example ZIP from the [release](https://github.com/davidahma/axiom/releases/tag/v0.3.2).
 
 | Evidence in the example | What the reviewer can say |
 | --- | --- |

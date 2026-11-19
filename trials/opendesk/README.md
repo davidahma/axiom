@@ -55,12 +55,18 @@ The trial runs the published multi-architecture image from [the pinned release](
 
 The Compose project accepts synthetic inputs on its own internal network and publishes no host ports. Each service runs as a non-root user with a read-only root filesystem, dropped Linux capabilities, and process and memory limits. PostgreSQL starts directly as its database OS user. The runner removes the containers and their data volumes after the trial.
 
-The November 19, 2026 Grype package inventory for the pinned Linux amd64 images returned the following counts. A match identifies an installed package version listed in an advisory. Runtime reachability and other architectures were outside the scan.
+The trial uses digest-pinned Chainguard PostgreSQL 18.7 and Python 3.15.2 images. OpenDesk's migration supports a database without the vector extension. The storage checks read the source message and the ticket summary by ID. Vector search is outside this trial's coverage. [Upstream migration](https://github.com/useopendesk/opendesk/blob/e0012447924c5ac8a13a51d2cd41a6496bc26fb3/migrations/000501_ai_embeddings.up.sql) · [PostgreSQL image](https://images.chainguard.dev/directory/image/postgres/overview) · [Python image](https://images.chainguard.dev/directory/image/python/overview)
 
-| Trial image | Critical matches | High matches |
-| --- | ---: | ---: |
-| opendesk v0.4.13 | 1 | 0 |
-| pgvector pg17 (PostgreSQL 17.12) | 12 | 206 |
-| CPython 3.12.16 slim | 0 | 78 |
+Grype's November 19, 2026 inventory returned the following package-level matches. Each new image had the same counts on Linux amd64 and arm64. The [v0.3.1 inventory](https://github.com/davidahma/axiom/blob/v0.3.1/trials/opendesk/README.md#trial-image-review) covered Linux amd64.
 
-The pinned opendesk binary includes an affected Brotli decoder. The trial client sends synthetic JSON to fixed API routes. Six pgvector Critical matches concern the Go runtime embedded in `gosu`, which the non-root database startup skips. The Python patch update removed the two Critical matches in the previous model-stub image. Keep these images scoped to the disposable trial. Axiom’s portable CLI uses the Python standard library and ships none of these container images. [Go Brotli advisory](https://pkg.go.dev/vuln/GO-2026-6888) · [Compose configuration and image digests](compose.yaml)
+| Trial service | v0.3.1 Critical / High | Current Critical / High | Other current matches per architecture |
+| --- | --- | --- | --- |
+| OpenDesk v0.4.13 | 1 / 0 | 1 / 0 | 1 Medium |
+| PostgreSQL | 12 / 206 | 0 / 0 | 1 Medium, 1 Low |
+| Python model stub | 0 / 78 | 0 / 0 | 4 Medium, 3 Low, 1 Negligible |
+
+**OpenDesk and Brotli.** The released application includes Brotli v1.2.2. The advisory affects the decoder's `Reader.Read` method and lists v1.2.7 as the first fixed release. At the pinned OpenDesk commit, the sole direct importer in the application build is PostHog, which uses the Brotli writer to compress outbound telemetry. Source-mode `govulncheck` found the affected package on both Linux architectures and found no call to the affected method. Inspection of both released binaries also found the encoder and no decoder entry point. Keep the package finding visible and reassess it whenever the OpenDesk image changes. [Go advisory](https://pkg.go.dev/vuln/GO-2026-6888) · [OpenDesk dependency pin](https://github.com/useopendesk/opendesk/blob/e0012447924c5ac8a13a51d2cd41a6496bc26fb3/go.mod#L58) · [PostHog encoder](https://github.com/PostHog/posthog-go/blob/v1.42.4/request_compression.go#L42-L52)
+
+**Image updates.** Dependabot checks the Compose images weekly. For an image update, verify the publisher and multi-architecture digest, review the inventory for both platforms, and run the full offboarding trial. The runner checks the OpenDesk image against the target declared in its report before starting the services. When updating that target, preserve replay of evidence recorded against earlier releases. [Compose image pins](compose.yaml) · [Chainguard signature verification](https://www.chainguard.dev/docs/chainguard/containers/security-and-compliance/verifying-chainguard-images-and-metadata-signatures-with-cosign)
+
+The [trial image audit](https://github.com/davidahma/axiom/actions/workflows/trial-images.yml) runs weekly, on demand, and on pull requests that change the image pins or the audit. It saves the Syft package inventory, full Grype report and High/Critical findings for each image and architecture. A new High or Critical match fails the audit. The reviewed Brotli match is displayed as `KNOWN` only for the recorded image digest, module version and binary path. A scanner or database failure also fails the job.

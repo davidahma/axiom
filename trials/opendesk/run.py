@@ -20,13 +20,14 @@ from verify_report import (
     HEALTHY_V2,
     LATEST_VERSION,
     METADATA,
+    TARGET,
     UNTESTED,
     outcome,
     validate,
 )
 
 HERE = Path(__file__).resolve().parent
-COMPOSE_TIMEOUTS = {"up": 15 * 60, "exec": 60, "down": 90}
+COMPOSE_TIMEOUTS = {"config": 30, "up": 15 * 60, "exec": 60, "down": 90}
 SUPPORT_EMAIL = "agent@example.test"
 CASES = {
     "Acme": ("copper compass", "Route returns to the copper-compass desk."),
@@ -308,6 +309,14 @@ def checkpoint(stack, api, agent, ids, report, phase):
 
 
 def run(stack, report):
+    config = stack.compose(
+        "config", "--no-interpolate", "--format", "json", capture=True
+    )
+    app_image = json.loads(config)["services"]["app"]["image"]
+    expected = f"ghcr.io/useopendesk/opendesk:{TARGET['version']}@{TARGET['image']}"
+    if app_image != expected:
+        print("Compose app image differs from the report target.", file=sys.stderr)
+        raise ValueError("Unexpected opendesk image")
     stack.compose("up", "--detach", "--wait", "--wait-timeout", "150")
     api = API(stack)
     stack.sql(

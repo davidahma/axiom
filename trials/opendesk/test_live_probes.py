@@ -30,6 +30,17 @@ TICKET = str(uuid4())
 
 
 class LiveProbeTests(unittest.TestCase):
+    def test_changed_compose_target_stops_before_container_start(self):
+        stack = Mock()
+        stack.compose.return_value = json.dumps(
+            {"services": {"app": {"image": "ghcr.io/useopendesk/opendesk:other"}}}
+        )
+        with redirect_stderr(io.StringIO()), self.assertRaises(ValueError):
+            run.run(stack, {})
+        stack.compose.assert_called_once_with(
+            "config", "--no-interpolate", "--format", "json", capture=True
+        )
+
     def test_transport_sends_one_request_to_the_designated_service(self):
         call = {
             "method": "GET",
