@@ -1,5 +1,16 @@
 # Axiom
 
+Tenant offboarding is now part of Setrya. For new integrations, install Setrya 0.6.0 in a Python 3.11+ virtual environment and run the demo with a fresh output directory. [Setrya README](https://github.com/davidahma/setrya#readme) · [Setrya 0.6.0 release](https://github.com/davidahma/setrya/releases/tag/v0.6.0)
+
+```sh
+python -m pip install 'setrya @ https://github.com/davidahma/setrya/releases/download/v0.6.0/setrya-0.6.0.tar.gz'
+setrya offboarding demo --output offboarding-run
+```
+
+Use `setrya offboarding gate` for the CI verdict. For a particular deletion request, use `setrya offboarding receipt` and `setrya offboarding verify-receipt`. A technical PASS can still leave a backup expiry or a provider statement open for review.
+
+The instructions below cover Axiom v0.3.2. You can replay its original gate inputs and deletion receipts with Setrya or download the standalone Axiom CLI for an existing integration. [Axiom v0.3.2 CLI and evidence](https://github.com/davidahma/axiom/releases/tag/v0.3.2)
+
 **Test what an AI application can still return after a customer leaves.**
 
 Acme’s offboarding job deletes its support ticket and summary. Both database reads come back empty. Then a worker that read the ticket before deletion saves its answer, and a support agent can retrieve Acme’s summary again. Axiom’s local demo reproduces that failure.
