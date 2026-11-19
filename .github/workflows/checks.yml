@@ -1,0 +1,91 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  reference:
+    name: Reference checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+      - name: Lint Python sources
+        run: |
+          python -m pip install --only-binary=:all: --no-deps --require-hashes -r .github/requirements.txt
+          python -m ruff check axiom_demo tests trials
+      - name: Run tests and reproduce all fixture outcomes
+        run: make check
+      - name: Validate and scan the report before upload
+        id: report
+        if: ${{ !cancelled() && hashFiles('artifacts/demo-report.json') != '' }}
+        run: |
+          python -m axiom_demo validate artifacts/demo-report.json
+          bash .github/scripts/install-gitleaks.sh
+          "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < artifacts/demo-report.json
+      - name: Save the checked report
+        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reference-report
+          path: artifacts/demo-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history and the checked-out change
+        run: |
+          bash .github/scripts/install-gitleaks.sh
+          "$RUNNER_TEMP/axiom-tools/gitleaks" git --no-banner --redact --ignore-gitleaks-allow --log-opts="--all HEAD" .
+
+  upstream:
+    name: Upstream trial
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+      - name: Exercise workspace offboarding on the pinned local application
+        run: python3 trials/opendesk/run.py --report artifacts/opendesk.json
+      - name: Validate and scan the upstream report before upload
+        id: report
+        if: ${{ !cancelled() && hashFiles('artifacts/opendesk.json') != '' }}
+        run: |
+          python3 trials/opendesk/verify_report.py artifacts/opendesk.json
+          bash .github/scripts/install-gitleaks.sh
+          "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < artifacts/opendesk.json
+      - name: Save the checked upstream report
+        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-report
+          path: artifacts/opendesk.json
+          if-no-files-found: error
+          retention-days: 7
