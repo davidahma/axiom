@@ -1,4 +1,4 @@
-"""Run the reference cases or validate an exported report."""
+"""Run the offboarding gate, run reference cases, or validate a demo report."""
 
 import argparse
 import hashlib
@@ -6,8 +6,10 @@ import json
 import os
 import sys
 import tempfile
+from importlib.resources import files
 from pathlib import Path
 
+from . import gate
 from .report import (
     CASES,
     PHASES,
@@ -54,7 +56,7 @@ def demo(path):
         {
             "schema_version": 1,
             "fixture_sha256": hashlib.sha256(
-                Path(fixture.__file__).read_bytes()
+                files("axiom_demo").joinpath("fixture.py").read_bytes()
             ).hexdigest(),
             "read_roles": ROLES,
             "cases": cases,
@@ -96,9 +98,81 @@ def demo(path):
     return 0
 
 
+def read_gate_input(path, label):
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(gate.MAX_INPUT_BYTES + 1)
+    except OSError:
+        raise InvalidReport(f"Could not read {label} input.") from None
+    if len(raw) > gate.MAX_INPUT_BYTES:
+        raise InvalidReport(f"The {label} input exceeds the 1 MiB limit.")
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields)
+    except (ValueError, RecursionError):
+        raise InvalidReport(
+            f"Invalid {label} JSON. Use UTF-8 and unique fields."
+        ) from None
+    return data, hashlib.sha256(raw).hexdigest()
+
+
+def run_gate(args):
+    try:
+        policy, policy_digest = read_gate_input(args.policy, "policy")
+        observations, data_digest = read_gate_input(args.observations, "observations")
+        report = gate.evaluate(
+            policy,
+            observations,
+            expect_run=args.expect_run,
+            expect_revision=args.expect_revision,
+        )
+        report["policy_sha256"] = policy_digest
+        report["observations_sha256"] = data_digest
+        if args.output is not None:
+            if args.output.exists() and any(
+                args.output.samefile(path) for path in (args.policy, args.observations)
+            ):
+                raise InvalidReport("Output must be separate from both inputs.")
+            save(report, args.output)
+    except InvalidReport as error:
+        print(f"Invalid gate input. {error}", file=sys.stderr)
+        return 3
+    except OSError:
+        print("Could not write gate report.", file=sys.stderr)
+        return 3
+    for probe in report["probes"]:
+        print(
+            probe["verdict"],
+            probe["id"],
+            probe["scope"],
+            probe["checkpoint"],
+            *probe["reasons"],
+        )
+    print(f"Gate {report['verdict']}")
+    return gate.EXIT_CODES[report["verdict"]]
+
+
+class GateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(3, "Invalid arguments. See 'gate --help' for usage.\n")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    parser_class = (
+        GateArgumentParser if argv[:1] == ["gate"] else argparse.ArgumentParser
+    )
+    parser = parser_class(description=__doc__)
     jobs = parser.add_subparsers(dest="command", required=True)
+    staging = jobs.add_parser(
+        "gate", help="check staging observations against a policy"
+    )
+    staging.add_argument("--policy", type=Path, required=True)
+    staging.add_argument("--observations", type=Path, required=True)
+    staging.add_argument("--output", type=Path, help="write a content-free JSON report")
+    staging.add_argument("--expect-run", help="require this observation run identifier")
+    staging.add_argument(
+        "--expect-revision", help="require this observed target revision"
+    )
     run = jobs.add_parser("demo", help="run three isolated reference cases")
     run.add_argument("--output", type=Path, default=Path("artifacts/demo-report.json"))
     check = jobs.add_parser(
@@ -106,6 +180,8 @@ def main(argv=None):
     )
     check.add_argument("report", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "gate":
+        return run_gate(args)
     if args.command == "demo":
         return demo(args.output)
     try:
