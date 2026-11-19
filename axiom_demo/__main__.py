@@ -1,4 +1,4 @@
-"""Run the offboarding gate, run reference cases, or validate a demo report."""
+"""Check offboarding evidence, issue and replay receipts, or run the reference demo."""
 
 import argparse
 import hashlib
@@ -9,7 +9,7 @@ import tempfile
 from importlib.resources import files
 from pathlib import Path
 
-from . import gate
+from . import gate, receipt_cli
 from .report import (
     CASES,
     PHASES,
@@ -98,9 +98,9 @@ def demo(path):
     return 0
 
 
-def read_gate_input(path, label):
+def read_gate_input(path, label, *, opener=None):
     try:
-        with path.open("rb") as stream:
+        with open(path, "rb", opener=opener) as stream:
             raw = stream.read(gate.MAX_INPUT_BYTES + 1)
     except OSError:
         raise InvalidReport(f"Could not read {label} input.") from None
@@ -153,16 +153,19 @@ def run_gate(args):
 
 class GateArgumentParser(argparse.ArgumentParser):
     def error(self, message):
-        self.exit(3, "Invalid arguments. See 'gate --help' for usage.\n")
+        self.exit(3, "Invalid arguments. Use the command's --help for usage.\n")
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     parser_class = (
-        GateArgumentParser if argv[:1] == ["gate"] else argparse.ArgumentParser
+        GateArgumentParser
+        if argv and argv[0] in ("gate", *receipt_cli.COMMANDS)
+        else argparse.ArgumentParser
     )
     parser = parser_class(description=__doc__)
     jobs = parser.add_subparsers(dest="command", required=True)
+    receipt_cli.add_commands(jobs)
     staging = jobs.add_parser(
         "gate", help="check staging observations against a policy"
     )
@@ -180,6 +183,8 @@ def main(argv=None):
     )
     check.add_argument("report", type=Path)
     args = parser.parse_args(argv)
+    if args.command in receipt_cli.COMMANDS:
+        return receipt_cli.run(args, read_gate_input)
     if args.command == "gate":
         return run_gate(args)
     if args.command == "demo":

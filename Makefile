@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: demo test bundle check
+.PHONY: demo test bundle receipt-example check
 
 demo:
 	$(PYTHON) -m axiom_demo demo --output artifacts/demo-report.json
@@ -12,5 +12,8 @@ test:
 bundle:
 	$(PYTHON) scripts/build_zipapp.py --output artifacts/axiom.pyz
 
-check: test demo bundle
+receipt-example: bundle
+	$(PYTHON) scripts/receipt_example.py
+
+check: test demo receipt-example
 	$(PYTHON) -m axiom_demo validate artifacts/demo-report.json

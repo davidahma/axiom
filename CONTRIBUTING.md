@@ -4,6 +4,8 @@ Run `make check` from a clean checkout to test the portable gate, reproduce the 
 
 For a change to the application trial, start Docker and run `python3 trials/opendesk/run.py --report artifacts/opendesk.json`. Check the resulting evidence with `python3 trials/opendesk/verify_report.py artifacts/opendesk.json`. CI runs these same commands against an isolated deployment. All workspaces are synthetic. Forks can run both lanes without repository secrets or a model key.
 
+The receipt example uses a synthetic request, actual application reads and two fictional exhibits. Run `make receipt-example` to generate and replay the release ZIP. Changes to receipts must exercise both issuance and independent replay, including a mismatched request or an open item. [Receipt contract](docs/receipts.md)
+
 ## Changing an observation or verdict
 
 Open a pull request that names the case and the expected observation at a specific checkpoint. Include a regression case for a corrected verdict. Preserve the controls that establish initial visibility, the retained workspace and the worker outcome. An intentionally faulty fixture should still produce a failure in its own report. Missing evidence should remain visible.

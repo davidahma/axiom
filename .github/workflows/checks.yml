@@ -50,6 +50,18 @@ jobs:
           python -m axiom_demo validate artifacts/demo-report.json
           bash .github/scripts/install-gitleaks.sh
           "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < artifacts/demo-report.json
+      - name: Scan synthetic receipt and exhibits before upload
+        run: |
+          unzip -q artifacts/receipt-example.zip -d "$RUNNER_TEMP/receipt-example"
+          "$RUNNER_TEMP/axiom-tools/gitleaks" dir --no-banner --redact --ignore-gitleaks-allow "$RUNNER_TEMP/receipt-example"
+          cat "$RUNNER_TEMP/receipt-example/request.sha256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save the replayable synthetic receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: request-receipt-example
+          path: artifacts/receipt-example.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Save the checked report
         if: ${{ !cancelled() && steps.report.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

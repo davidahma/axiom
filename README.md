@@ -1,16 +1,36 @@
 # Axiom
 
-**Catch customer data that survives tenant offboarding before you ship.**
+**Show what happened to a customer's data after a specific deletion request.**
 
-An offboarding job can delete a customer's ticket and still leave its answer in a cache. Axiom turns reads from your staging test into a CI decision. You name the checks a release requires. Your test runs the offboarding job and reads the same records for the departing tenant and a tenant that stays. Axiom reports which checks passed, where data survived, and what the test could not establish.
+A support vendor offboards a customer. The ticket is gone, the answer cache is clear, and a provider says it removed its copy. A backup is still waiting to expire. What can the vendor sign?
+
+Axiom ties a deletion job to the original request and gives the reviewer a receipt they can replay offline. The receipt shows what the application actually read, what a provider reported, and what remains open. Teams can also use the same checks in CI to catch data that survives an offboarding change.
+
+## Try a deletion receipt
+
+Run this from a fresh clone with Python 3.11+ and Make. The example uses a temporary SQLite database and synthetic documents. It needs no account, model key, or cloud service.
+
+```sh
+git clone https://github.com/davidahma/axiom.git
+cd axiom
+make receipt-example
+```
+
+| What the example records | Result |
+| --- | --- |
+| The departing tenant's ticket and cached answer disappeared. The same reads still found the retained tenant's records. | **Technical checks passed** |
+| A fictional downstream provider supplied a statement saying it removed its copy. | **Provider-reported deletion** |
+| The backup operator supplied a scheduled expiry date. | **Open item** |
+
+The final receipt says **OPEN_ITEMS**. A reviewer can unpack `artifacts/receipt-example.zip`, read the original exhibits and reproduce that conclusion. A clean run from a different request is rejected even when the build and CI run ID match. The case owner saves a fresh digest before dispatch, and the example observer reads that binding back from the committed deletion job.
+
+[Review a receipt and integrate your job](docs/receipts.md) · [Download the standalone CLI and example](https://github.com/davidahma/axiom/releases/tag/v0.3.0)
 
 ## Try the gate
 
 This example runs on Python 3.11+ with the standard library. It creates a disposable SQLite database, offboards Acme, and leaves a cached answer behind.
 
 ```sh
-git clone https://github.com/davidahma/axiom.git
-cd axiom
 python3 examples/sqlite/observe.py --case residual --output artifacts/run.json
 python3 -m axiom_demo gate --policy examples/sqlite/policy.json --observations artifacts/run.json
 ```
@@ -29,7 +49,7 @@ The gate exits **1**. Run the two Python commands again with `--case clean` to s
 2. In your integration test, seed a departing tenant and a retained control. Read both before and after your usual offboarding job. Export only their observed states and the tested run and revision. An `after_worker` check also needs evidence that the same worker captured input before deletion and finished afterward.
 3. Run Axiom in CI. A known leftover blocks the release even when another read is inconclusive. Omitting a required probe also blocks release.
 
-Download `axiom.pyz` and run it from your application's checkout with Python 3.11+. Supply run and revision values from CI so an old observation file cannot pass a new build. [Release download and checksum](https://github.com/davidahma/axiom/releases/tag/v0.2.0)
+Download `axiom.pyz` and run it from your application's checkout with Python 3.11+. Supply run and revision values from CI so an old observation file cannot pass a new build. [Release download and checksum](https://github.com/davidahma/axiom/releases/tag/v0.3.0)
 
 ```sh
 python3 axiom.pyz gate --policy ci/offboarding-policy.json \
