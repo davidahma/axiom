@@ -1,20 +1,51 @@
 # Axiom
 
-**Does a customer's AI-generated support summary disappear when the customer leaves?**
+**Catch customer data that survives tenant offboarding before you ship.**
 
-A support engineer deletes Acme’s workspace. The ticket is gone. Its summary is gone. The support agent can no longer retrieve it. Then a worker that read the ticket *before* deletion finishes. In Axiom’s deliberately broken reference system, the summary comes back. The ticket stays deleted.
+An offboarding job can delete a customer's ticket and still leave its answer in a cache. Axiom turns reads from your staging test into a CI decision. You name the checks a release requires. Your test runs the offboarding job and reads the same records for the departing tenant and a tenant that stays. Axiom reports which checks passed, where data survived, and what the test could not establish.
 
-Axiom is a runnable tenant-offboarding case study. It checks the source row, the derived summary, and the answer visible to a support agent at distinct points in time. A second workspace, Birch, stays active so that an outage or an empty database cannot pass for successful cleanup.
+## Try the gate
 
-[Run the demo](#run-the-demo) · [Independent application trial](#independent-application-trial) · [Read the evidence](docs/evidence.md) · [CI runs](https://github.com/davidahma/axiom/actions/workflows/checks.yml)
-
-## Run the demo
-
-You need Python 3.11 or newer with its standard library. From a fresh clone:
+This example runs on Python 3.11+ with the standard library. It creates a disposable SQLite database, offboards Acme, and leaves a cached answer behind.
 
 ```sh
 git clone https://github.com/davidahma/axiom.git
 cd axiom
+python3 examples/sqlite/observe.py --case residual --output artifacts/run.json
+python3 -m axiom_demo gate --policy examples/sqlite/policy.json --observations artifacts/run.json
+```
+
+```text
+PASS source tickets after_offboarding
+FAIL cache cached_answers after_offboarding after_subject_present
+Gate FAIL
+```
+
+The gate exits **1**. Run the two Python commands again with `--case clean` to see both reads pass (exit **0**). With `--case unavailable`, the cache reader loses its connection. The source still passes and the gate reports `INCONCLUSIVE` (exit **2**). Invalid input or a run identity mismatch exits **3**.
+
+## Gate your own build
+
+1. Commit a policy naming each required surface, read scope, and checkpoint. Include the copies your application can actually return, such as a support summary or answer cache.
+2. In your integration test, seed a departing tenant and a retained control. Read both before and after your usual offboarding job. Export only their observed states and the tested run and revision. An `after_worker` check also needs evidence that the same worker captured input before deletion and finished afterward.
+3. Run Axiom in CI. A known leftover blocks the release even when another read is inconclusive. Omitting a required probe also blocks release.
+
+Download `axiom.pyz` and run it from your application's checkout with Python 3.11+. Supply run and revision values from CI so an old observation file cannot pass a new build. [Release download and checksum](https://github.com/davidahma/axiom/releases/tag/v0.2.0)
+
+```sh
+python3 axiom.pyz gate --policy ci/offboarding-policy.json \
+  --observations "$RUN_DIR/observations.json" --output "$RUN_DIR/decision.json" \
+  --expect-run "$TEST_RUN_ID" --expect-revision "$TESTED_REVISION"
+```
+
+The evidence comes from your test harness. A passing decision covers its named reads at its recorded checkpoints. Copies outside the policy, backups, physical erasure, and future writes need separate evidence. The decision includes SHA-256 digests of both inputs so a reviewer can replay it. [Integration guide and JSON contract](docs/gate.md) · [Working SQLite producer](examples/sqlite/) · [CI runs](https://github.com/davidahma/axiom/actions/workflows/checks.yml)
+
+## Reproduce a delayed write
+
+A worker reads Acme’s ticket before deletion and saves its summary afterward. In Axiom's deliberately broken support system the summary comes back while the ticket stays deleted. A version check at the write boundary changes the outcome.
+
+From the Axiom checkout, run the three worker cases.
+
+```sh
 python3 -m axiom_demo demo
 ```
 
@@ -28,7 +59,7 @@ python3 -m axiom_demo demo
 
 The command exits successfully when it reproduces all three expected outcomes, including the specific failure. It preserves that failure in the report. A changed failure pattern makes the command exit unsuccessfully.
 
-## The decision that changes the result
+### Why the summary comes back
 
 Both writers read the same source, capture the same workspace generation, and compute the same summary. Offboarding advances the generation and removes Acme’s source and summary in one transaction. The corrected writer checks the workspace is still active **and** still has the captured generation *inside the same transaction that would save the summary*. The broken writer saves the captured answer without that final check.
 
@@ -67,7 +98,9 @@ We also ran a normal workspace offboarding against **opendesk v0.4.13**, a separ
 | Birch source, summary, and support read | Present and returned | Still present and returned |
 | Worker overlapping upstream deletion | — | **Not tested.** Both upstream summary requests completed before deletion. |
 
-Run the independent trial with Python and Docker Compose:
+The trial completed its offboarding procedure. The portable policy gives it **INCONCLUSIVE** overall. Both storage probes passed, the support-agent read was unavailable, and the worker overlap was untested. CI checks all four findings.
+
+Run the independent trial with Python and Docker Compose.
 
 ```sh
 python3 trials/opendesk/run.py --report artifacts/opendesk.json
@@ -82,7 +115,7 @@ make check
 python3 -m axiom_demo validate artifacts/demo-report.json
 ```
 
-`make check` runs the regression tests, repeats the reference demo, and validates its report. The validation command checks the evidence format and recomputes each verdict from the recorded observations. GitHub Actions also exercises the pinned upstream trial and scans the repository history for secrets. See [contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md).
+`make check` tests the gate, builds the portable CLI, exercises it outside the checkout, and replays the reference cases. The validation command checks the evidence format and recomputes each verdict from the recorded observations. GitHub Actions also exercises the pinned upstream trial and scans the repository history for secrets. See [contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md).
 
 Axiom focuses on one end-to-end offboarding decision. For broader RAG lifecycle and index-race testing, see [RecallFSCK](https://github.com/sanketsinghai/recallfsck). For an example of gating changes to a deletion worker, see [AfterDelete](https://gitlab.com/aidash-group1/afterdelete). Each project documents the reach of its own checks.
 

@@ -1,5 +1,7 @@
 # Reading an Axiom report
 
+This page describes the controlled worker experiment. To interpret a CI decision on application-supplied evidence, use the [portable gate contract](gate.md).
+
 The reference report answers two questions independently. Did the system exhibit an offboarding failure? Did the experiment produce the observations needed to tell? An observed failure can coexist with a gap in another check.
 
 ## Evidence contract, version 1

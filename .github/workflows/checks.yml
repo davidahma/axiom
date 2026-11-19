@@ -28,9 +28,21 @@ jobs:
       - name: Lint Python sources
         run: |
           python -m pip install --only-binary=:all: --no-deps --require-hashes -r .github/requirements.txt
-          python -m ruff check axiom_demo tests trials
+          python -m ruff check axiom_demo examples scripts tests trials
       - name: Run tests and reproduce all fixture outcomes
         run: make check
+      - name: Checksum the tested standalone CLI
+        working-directory: artifacts
+        run: sha256sum axiom.pyz > axiom.pyz.sha256
+      - name: Save the portable CLI for release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portable-cli
+          path: |
+            artifacts/axiom.pyz
+            artifacts/axiom.pyz.sha256
+          if-no-files-found: error
+          retention-days: 7
       - name: Validate and scan the report before upload
         id: report
         if: ${{ !cancelled() && hashFiles('artifacts/demo-report.json') != '' }}
@@ -74,6 +86,16 @@ jobs:
           python-version: '3.11'
       - name: Exercise workspace offboarding on the pinned local application
         run: python3 trials/opendesk/run.py --report artifacts/opendesk.json
+      - name: Apply the offboarding policy to the live trial
+        run: |
+          python3 trials/opendesk/to_gate.py artifacts/opendesk.json --output artifacts/opendesk-observations.json
+          status=0
+          python3 -m axiom_demo gate --policy trials/opendesk/policy.json \
+            --observations artifacts/opendesk-observations.json --output artifacts/opendesk-decision.json || status=$?
+          test "$status" -eq 2
+          jq -e '.verdict == "INCONCLUSIVE" and
+            ([.probes[] | {key:.id, value:.verdict}] | from_entries) ==
+              {"source":"PASS","summary":"PASS","agent-read":"INCONCLUSIVE","worker-summary":"INCONCLUSIVE"}' artifacts/opendesk-decision.json
       - name: Validate and scan the upstream report before upload
         id: report
         if: ${{ !cancelled() && hashFiles('artifacts/opendesk.json') != '' }}
@@ -81,6 +103,21 @@ jobs:
           python3 trials/opendesk/verify_report.py artifacts/opendesk.json
           bash .github/scripts/install-gitleaks.sh
           "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < artifacts/opendesk.json
+      - name: Scan the portable evidence before upload
+        if: ${{ success() }}
+        run: |
+          for report in artifacts/opendesk-observations.json artifacts/opendesk-decision.json; do
+            "$RUNNER_TEMP/axiom-tools/gitleaks" stdin --no-banner --redact --ignore-gitleaks-allow < "$report"
+          done
+      - name: Save the checked gate decision and observations
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-gate
+          path: |
+            artifacts/opendesk-observations.json
+            artifacts/opendesk-decision.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Save the checked upstream report
         if: ${{ !cancelled() && steps.report.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

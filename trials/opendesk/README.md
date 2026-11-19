@@ -15,6 +15,20 @@ The first run pulls three images pinned by digest. The trial starts a randomly n
 
 [The checked-in observation](observed.json) records an actual run. The database readback found both Acme records before offboarding and found neither afterward. The agent's subsequent Acme request returned HTTP 400 with `workspace_required`. The application visibility check is **INCONCLUSIVE** because the workspace context is no longer available. The same agent could still read Birch's summary. The terminal result **COMPLETED** covers the observations recorded on this build.
 
+## Apply the offboarding policy
+
+From the repository root, run the gate on the trial you just generated. You can also use `trials/opendesk/observed.json` as the adapter input to try the recorded case without Docker.
+
+```sh
+python3 trials/opendesk/to_gate.py artifacts/opendesk.json --output artifacts/opendesk-observations.json
+python3 -m axiom_demo gate --policy trials/opendesk/policy.json \
+  --observations artifacts/opendesk-observations.json --output artifacts/opendesk-decision.json
+```
+
+The recorded case exits **2 (INCONCLUSIVE)**. Two checks pass. The database observer saw the Acme source message and summary disappear while the Birch records remained readable. The agent-read check stays inconclusive because the HTTP 400 prevented the caller from testing whether Acme's answer would be returned. The worker-summary check stays inconclusive because no writer was held across deletion in this trial. Its post-worker readings are both `not_tested`.
+
+The adapter validates the pinned trial report, converts each workspace read, and carries the upstream commit into `revision`. Its `run_id` identifies the exact input file by SHA-256. An interrupted read leaves the corresponding observations untested. HTTP 204 confirms the offboarding operation. Database and application observations determine the gate decision. The trial command also checks setup and teardown, so keep its exit status in CI alongside the gate.
+
 ## Observations
 
 | Step | What actually executes |
