@@ -1,8 +1,6 @@
 name: Trial image audit
 
 on:
-  schedule:
-    - cron: '27 9 * * 4'
   workflow_dispatch:
   pull_request:
     paths:

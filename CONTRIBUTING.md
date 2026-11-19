@@ -1,5 +1,7 @@
 # Contributing
 
+New offboarding development and releases take place in Setrya. The instructions below reproduce work on historical Axiom revisions. [Contribute to Setrya](https://github.com/davidahma/setrya/blob/main/CONTRIBUTING.md)
+
 Run `make check` from a clean checkout to test the portable gate, reproduce the reference cases and build `artifacts/axiom.pyz`. The tests run the downloadable CLI in a separate directory and check all three SQLite outcomes. The [README](README.md) explains each observed outcome.
 
 For a change to the application trial, start Docker and run `python3 trials/opendesk/run.py --report artifacts/opendesk.json`. Check the resulting evidence with `python3 trials/opendesk/verify_report.py artifacts/opendesk.json`. CI runs these same commands against an isolated deployment. All workspaces are synthetic. Forks can run both lanes without repository secrets or a model key.
