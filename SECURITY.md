@@ -1,5 +1,7 @@
 # Security
 
+For the maintained tenant offboarding toolkit, use [Setrya’s security policy](https://github.com/davidahma/setrya/blob/main/SECURITY.md). The guidance below applies to historical Axiom releases.
+
 ## Report a vulnerability
 
 For a vulnerability in Axiom, submit a [private vulnerability report](https://github.com/davidahma/axiom/security/advisories/new). Include the Axiom commit, the affected component, the expected behavior and the security impact. Use a synthetic workspace to describe the issue. If the affected code belongs to a target application, use that project’s private disclosure channel.
