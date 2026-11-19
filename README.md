@@ -24,7 +24,7 @@ make receipt-example
 
 The final receipt says **OPEN_ITEMS**. A reviewer can unpack `artifacts/receipt-example.zip`, read the original exhibits and reproduce that conclusion. A clean run from a different request is rejected even when the build and CI run ID match. The case owner saves a fresh digest before dispatch, and the example observer reads that binding back from the committed deletion job.
 
-[Review a receipt and integrate your job](docs/receipts.md) · [Download the standalone CLI and example](https://github.com/davidahma/axiom/releases/tag/v0.3.1)
+[Review a receipt and integrate your job](docs/receipts.md) · [Download the standalone CLI and example](https://github.com/davidahma/axiom/releases/tag/v0.3.2)
 
 ## Try the gate
 
@@ -49,7 +49,7 @@ The gate exits **1**. Run the two Python commands again with `--case clean` to s
 2. In your integration test, seed a departing tenant and a retained control. Read both before and after your usual offboarding job. Export only their observed states and the tested run and revision. An `after_worker` check also needs evidence that the same worker captured input before deletion and finished afterward.
 3. Run Axiom in CI. A known leftover blocks the release even when another read is inconclusive. Omitting a required probe also blocks release.
 
-Download `axiom.pyz` and run it from your application's checkout with Python 3.11+. Supply run and revision values from CI so an old observation file cannot pass a new build. [Release download and build verification](https://github.com/davidahma/axiom/releases/tag/v0.3.1)
+Download `axiom.pyz` and run it from your application's checkout with Python 3.11+. Supply run and revision values from CI so an old observation file cannot pass a new build. [Release download and build verification](https://github.com/davidahma/axiom/releases/tag/v0.3.2)
 
 ```sh
 python3 axiom.pyz gate --policy ci/offboarding-policy.json \

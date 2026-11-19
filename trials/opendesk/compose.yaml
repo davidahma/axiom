@@ -1,6 +1,6 @@
 services:
   database:
-    image: pgvector/pgvector:pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+    image: cgr.dev/chainguard/postgres:latest@sha256:9cc085289d7ef0174f35f2ff1e514624c3305c4a26215d8e89e3e277e3377d03
     user: "postgres"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -17,17 +17,17 @@ services:
       timeout: 2s
       retries: 45
     tmpfs:
-      - /var/lib/postgresql/data:uid=999,gid=999,mode=0700
-      - /var/run/postgresql:uid=999,gid=999,mode=0755
+      - /var/lib/postgresql/data:uid=70,gid=70,mode=0700
+      - /var/run/postgresql:uid=70,gid=70,mode=0755
       - /tmp:mode=1777
 
   model:
-    image: python:3.12.16-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+    image: cgr.dev/chainguard/python:latest@sha256:d2711a21a494fa5c2efbfcf4226268395bad5d03406083ed0f3e7bed5199cfb2
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
     pids_limit: 64
-    command: ["python", "-B", "/stub/provider.py"]
+    command: ["-B", "/stub/provider.py"]
     user: "65534:65534"
     read_only: true
     volumes:
